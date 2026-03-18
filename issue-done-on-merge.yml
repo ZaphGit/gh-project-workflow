@@ -1,0 +1,135 @@
+# .github/workflows/issue-done-on-merge.yml
+# Automatically moves linked issues to "Done" column in GitHub Projects
+# when a pull request is merged to main.
+#
+# Requirements:
+#   - Repository secret: PROJECT_NUMBER (your GitHub Project number)
+#   - The PR body must contain "Closes #<number>" to link the issue
+#   - The project must have a "Status" field with a "Done" option
+
+name: Move issues to Done on merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  issues: write
+  repository-projects: write
+
+jobs:
+  move-to-done:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
+
+    steps:
+      - name: Extract linked issue numbers
+        id: issues
+        run: |
+          BODY="${{ github.event.pull_request.body }}"
+          # Match "Closes #123", "Fixes #123", "Resolves #123" (case-insensitive)
+          ISSUES=$(echo "$BODY" | grep -oiP '(?:closes|fixes|resolves)\s+#\K\d+' | sort -u | tr '\n' ' ')
+          echo "numbers=$ISSUES" >> "$GITHUB_OUTPUT"
+          echo "Found linked issues: $ISSUES"
+
+      - name: Move issues to Done
+        if: steps.issues.outputs.numbers != ''
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+
+          # Get project ID
+          PROJECT_ID=$(gh api graphql -f query='
+            query($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) {
+                projectsV2(first: 20) {
+                  nodes {
+                    id
+                    number
+                  }
+                }
+              }
+            }
+          ' -f owner="$OWNER" -f repo="$REPO" -F number="$PROJECT_NUMBER" \
+            --jq ".data.repository.projectsV2.nodes[] | select(.number == $PROJECT_NUMBER) | .id")
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "ERROR: Could not find project #$PROJECT_NUMBER"
+            exit 1
+          fi
+
+          # Get Status field ID and Done option ID
+          FIELD_DATA=$(gh api graphql -f query='
+            query($projectId: ID!) {
+              node(id: $projectId) {
+                ... on ProjectV2 {
+                  fields(first: 30) {
+                    nodes {
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options { id name }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f projectId="$PROJECT_ID")
+
+          FIELD_ID=$(echo "$FIELD_DATA" | jq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id')
+          DONE_OPTION_ID=$(echo "$FIELD_DATA" | jq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name | test("done"; "i")) | .id')
+
+          if [ -z "$FIELD_ID" ] || [ -z "$DONE_OPTION_ID" ]; then
+            echo "ERROR: Could not find Status field or Done option"
+            exit 1
+          fi
+
+          # Get all project items to match issue numbers
+          ITEMS=$(gh api graphql -f query='
+            query($projectId: ID!) {
+              node(id: $projectId) {
+                ... on ProjectV2 {
+                  items(first: 100) {
+                    nodes {
+                      id
+                      content {
+                        ... on Issue { number }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f projectId="$PROJECT_ID")
+
+          for ISSUE_NUM in ${{ steps.issues.outputs.numbers }}; do
+            ITEM_ID=$(echo "$ITEMS" | jq -r --argjson num "$ISSUE_NUM" \
+              '.data.node.items.nodes[] | select(.content.number == $num) | .id')
+
+            if [ -n "$ITEM_ID" ] && [ "$ITEM_ID" != "null" ]; then
+              gh api graphql -f query='
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }
+              ' -f projectId="$PROJECT_ID" \
+                -f itemId="$ITEM_ID" \
+                -f fieldId="$FIELD_ID" \
+                -f optionId="$DONE_OPTION_ID"
+
+              echo "✅ Moved issue #$ISSUE_NUM to Done"
+            else
+              echo "⚠️  Issue #$ISSUE_NUM not found in project"
+            fi
+          done
