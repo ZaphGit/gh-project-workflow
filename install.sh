@@ -7,14 +7,16 @@
 # Or if you've cloned the repo:
 #   ./install.sh /path/to/your/project
 
-set -euo pipefail
+set -eo pipefail
 
 TARGET_DIR="${1:-.}"
 SOURCE_REPO="https://raw.githubusercontent.com/carlwestman/gh-project-workflow/main"
 
-# If running via curl/pipe, we fetch from GitHub
-# If running locally, we copy from the script's directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Detect if running locally (./install.sh) or piped (curl | bash)
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "bash" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 echo "📦 Installing GitHub Project workflow into: $(cd "$TARGET_DIR" && pwd)"
 echo ""
@@ -29,12 +31,15 @@ install_file() {
 
   mkdir -p "$target_dir"
 
-  if [[ -f "$SCRIPT_DIR/$rel_path" ]]; then
-    # Local install
+  if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/$rel_path" ]]; then
+    # Local install (cloned repo)
     cp "$SCRIPT_DIR/$rel_path" "$target"
   else
-    # Remote install
-    curl -fsSL "$SOURCE_REPO/$rel_path" -o "$target"
+    # Remote install (curl | bash)
+    if ! curl -fsSL "$SOURCE_REPO/$rel_path" -o "$target"; then
+      echo "  ❌ Failed to download $rel_path — is the repo pushed to GitHub?" >&2
+      return 1
+    fi
   fi
 
   echo "  ✅ $rel_path"
