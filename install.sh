@@ -21,36 +21,38 @@ fi
 echo "📦 Installing GitHub Project workflow into: $(cd "$TARGET_DIR" && pwd)"
 echo ""
 
-# ─── Helper: fetch or copy a file ────────────────────────────────────────────
+# ─── Helper: download from repo (flat) and place in target (nested) ──────────
+# Usage: install_file <repo_filename> <target_path>
 
 install_file() {
-  local rel_path="$1"
-  local target="$TARGET_DIR/$rel_path"
+  local repo_file="$1"
+  local target_path="$2"
+  local target="$TARGET_DIR/$target_path"
   local target_dir
   target_dir=$(dirname "$target")
 
   mkdir -p "$target_dir"
 
-  if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/$rel_path" ]]; then
+  if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/$repo_file" ]]; then
     # Local install (cloned repo)
-    cp "$SCRIPT_DIR/$rel_path" "$target"
+    cp "$SCRIPT_DIR/$repo_file" "$target"
   else
     # Remote install (curl | bash)
-    if ! curl -fsSL "$SOURCE_REPO/$rel_path" -o "$target"; then
-      echo "  ❌ Failed to download $rel_path — is the repo pushed to GitHub?" >&2
+    if ! curl -fsSL "$SOURCE_REPO/$repo_file" -o "$target"; then
+      echo "  ❌ Failed to download $repo_file — is the repo pushed to GitHub?" >&2
       return 1
     fi
   fi
 
-  echo "  ✅ $rel_path"
+  echo "  ✅ $target_path"
 }
 
 # ─── Check for existing files ────────────────────────────────────────────────
 
 check_conflict() {
-  local rel_path="$1"
-  if [[ -f "$TARGET_DIR/$rel_path" ]]; then
-    echo "  ⚠️  $rel_path already exists — skipping (delete it first to overwrite)"
+  local target_path="$1"
+  if [[ -f "$TARGET_DIR/$target_path" ]]; then
+    echo "  ⚠️  $target_path already exists — skipping (delete it first to overwrite)"
     return 1
   fi
   return 0
@@ -61,19 +63,19 @@ check_conflict() {
 echo "Installing files..."
 
 # Helper script (always overwrite — it's the core tool)
-install_file "scripts/gh-project.sh"
+install_file "gh-project.sh" "scripts/gh-project.sh"
 chmod +x "$TARGET_DIR/scripts/gh-project.sh"
 
 # Slash commands (skip if they already exist — user may have customised)
 for cmd in next-issue review-ready update-progress board; do
   if check_conflict ".claude/commands/$cmd.md"; then
-    install_file ".claude/commands/$cmd.md"
+    install_file "$cmd.md" ".claude/commands/$cmd.md"
   fi
 done
 
 # GitHub Action (skip if exists)
 if check_conflict ".github/workflows/issue-done-on-merge.yml"; then
-  install_file ".github/workflows/issue-done-on-merge.yml"
+  install_file "issue-done-on-merge.yml" ".github/workflows/issue-done-on-merge.yml"
 fi
 
 # ─── Update .gitignore ──────────────────────────────────────────────────────
